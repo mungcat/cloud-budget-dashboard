@@ -243,13 +243,7 @@ def sync_to_notion(data):
         title_text = f"{merchant} ({item_name})"
 
     date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
-    try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        # 노션 템플릿이 2026년 전용으로 세팅되어 있으므로 연도를 2026으로 고정
-        month_relation_key = f"2026년 {date_obj.month:02d}월 지출 세부"
-    except:
-        month_relation_key = "2026년 05월 지출 세부"
-
+    
     payload = {
         "parent": {"database_id": CALENDAR_DB_ID},
         "properties": {
@@ -257,7 +251,7 @@ def sync_to_notion(data):
             "금액": {"number": amt},
             "날짜": {"date": {"start": date_str}},
             "카테고리": {"select": {"name": "지출"}},
-            month_relation_key: {"relation": [{"id": page_id}]}
+            "예산 소비": {"relation": [{"id": page_id}]}
         }
     }
     
