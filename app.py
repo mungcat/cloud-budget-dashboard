@@ -245,7 +245,8 @@ def sync_to_notion(data):
     date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        month_relation_key = f"{date_obj.year}년 {date_obj.month:02d}월 지출 세부"
+        # 노션 템플릿이 2026년 전용으로 세팅되어 있으므로 연도를 2026으로 고정
+        month_relation_key = f"2026년 {date_obj.month:02d}월 지출 세부"
     except:
         month_relation_key = "2026년 05월 지출 세부"
 
