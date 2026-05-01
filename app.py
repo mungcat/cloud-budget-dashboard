@@ -196,7 +196,6 @@ def parse_text(raw_text):
         return []
 
 def sync_to_notion(data):
-    url = "https://api.api.com/v1/pages" # Typo fix: https://api.notion.com/v1/pages
     url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -204,22 +203,32 @@ def sync_to_notion(data):
         "Notion-Version": "2022-06-28"
     }
     
-    # 노션 다중 데이터베이스 라우팅 맵
-    CATEGORY_DB_MAP = {
-        "고정지출": "3a0998e5-3c5d-835c-884b-0114ad1fde31",
-        "공용 생활비": "cac998e5-3c5d-8348-9a06-817f8d7f6245",
-        "주유비": "4a6998e5-3c5d-826b-a3a6-010df200e7de",
-        "종호 지출": "8e5998e5-3c5d-8373-b2cf-0101adb65614",
-        "혜송 지출": "dd8998e5-3c5d-8318-a5fe-01974c2dba83",
-        "재이 지출": "1e7998e5-3c5d-83e1-95d8-01c6cb8d706e"
+    CALENDAR_DB_ID = "f33998e5-3c5d-83fc-a512-01273de7f5b0"
+    
+    CATEGORY_PAGE_MAP = {
+        "고정지출": "d61998e5-3c5d-8364-8aea-01ef2f470c67",
+        "공용 생활비": "e74998e5-3c5d-833a-923d-01d735ee9938",
+        "주유비": "fc6998e5-3c5d-82b1-9d65-81f8a42fafdc",
+        "종호 지출": "72f998e5-3c5d-8265-8f9e-8124b10989f1",
+        "혜송 지출": "651998e5-3c5d-835a-8dc8-81df6de7fe8f",
+        "재이 지출": "ef7998e5-3c5d-82a9-a71f-81fbadfae690",
+        "여행 문화 쇼핑": "336998e5-3c5d-8378-8318-819c6ec60c76",
+        "경조사": "794998e5-3c5d-8230-aec7-810c9cfa4d8f",
+        "차관련비용": "304998e5-3c5d-82fd-be44-8196e4270e62",
+        "멍게": "363998e5-3c5d-8396-a437-014b0babfd2e",
+        "식비": "70b998e5-3c5d-8274-852f-011fe69289a1",
+        "의료비": "70e998e5-3c5d-83e4-b57f-011d66ce5771",
+        "쇼핑": "d9c998e5-3c5d-83b9-84e6-01ed40d3d673",
+        "생필품": "34b998e5-3c5d-834c-9744-81d833885ce1",
+        "문화생활, 외출": "8cd998e5-3c5d-8291-9b4e-012fb4c43d62",
+        "교육": "81d998e5-3c5d-8215-b2fe-81729990840d"
     }
     
     cat = data.get("category", "")
-    # 자산 이동이나 기타 카테고리는 노션 전송 제외
-    if cat not in CATEGORY_DB_MAP:
-        return True, "전송 제외 카테고리 (자산 이동 등)"
+    if cat not in CATEGORY_PAGE_MAP:
+        return True, "전송 제외 (자산 이동 또는 수입)"
         
-    target_db = CATEGORY_DB_MAP[cat]
+    page_id = CATEGORY_PAGE_MAP[cat]
     
     try:
         amt_str = str(data.get("amount", "0")).replace(",", "").replace("원", "").strip()
@@ -233,15 +242,24 @@ def sync_to_notion(data):
     if item_name and item_name != '알 수 없음':
         title_text = f"{merchant} ({item_name})"
 
+    date_str = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        month_relation_key = f"{date_obj.year}년 {date_obj.month:02d}월 지출 세부"
+    except:
+        month_relation_key = "2026년 05월 지출 세부"
+
     payload = {
-        "parent": {"database_id": target_db},
+        "parent": {"database_id": CALENDAR_DB_ID},
         "properties": {
-            "Name": {"title": [{"text": {"content": title_text}}]},
-            "지출": {"number": amt},
-            "이체, 결제 날짜": {"rich_text": [{"text": {"content": data.get("date", "")}}]},
-            "메모": {"rich_text": [{"text": {"content": item_name}}]}
+            "내역": {"title": [{"text": {"content": title_text}}]},
+            "금액": {"number": amt},
+            "날짜": {"date": {"start": date_str}},
+            "카테고리": {"select": {"name": "지출"}},
+            month_relation_key: {"relation": [{"id": page_id}]}
         }
     }
+    
     try:
         r = requests.post(url, headers=headers, json=payload)
         r.raise_for_status()
