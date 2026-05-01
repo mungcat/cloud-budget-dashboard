@@ -148,12 +148,15 @@ def parse_text(raw_text):
 - 재이 지출: 아이사랑 카드, 유아용품
 - 여행 문화 쇼핑: 쇼핑몰, 숙박, 여행
 - 경조사: 축의금, 부조금
-- 자산 이동: 쿠페이 충전, 네이버페이 충전 등 선불페이 지갑으로 돈이 넘어가는 것 (쿠팡 결제 중 10만원, 5만원 단위 등 충전성 결제 포함)
-- 알수없음: 위 분류로 확실치 않은 새로운 가맹점, 혹은 일반 쿠팡/카카오페이 결제인데 무엇을 샀는지 전혀 유추할 수 없는 경우
+- 자산 이동: 쿠페이 충전, 네이버페이 충전 등 선불페이 지갑으로 돈이 넘어가는 것
+- 수입: 입금, 월급 등
+- 알수없음: 확실치 않은 가맹점
 
-[주의사항]
-1. 단순 대출 '예정' 안내 문자는 지출이 아니므로 무시(배열을 비워서 [] 반환)하세요.
-2. 쿠팡이나 카카오페이 결제라도 문맥상 '충전'이면 자산 이동, 단순 구매면 품목에 따라 적절히 분류하되, 확신할 수 없으면 '알수없음'으로 하세요.
+[🔥네이버페이/쿠페이 중복 결제 특수 로직🔥]
+결제 수단이 '네이버페이'나 '쿠페이'인 경우, 은행 계좌에서 돈이 빠져나가는 출금 문자와 실제 쇼핑몰 결제 내역이 중복될 가능성이 매우 높습니다.
+1. 은행 출금 데이터(예: SC제일은행 -> 네이버페이 출금 65,275원)는 무조건 카테고리를 '자산 이동'으로 고정하고, 실소비(지출)로 취급하지 마세요.
+2. 실제 소비 금액은 반드시 쇼핑몰 상세 내역(예: 베어블리 자석블록 36,900원)의 품목별 금액을 합산해서 산출하고, 이를 '실소비' 항목(재이 지출 등)으로 분류하세요.
+3. 네이버쇼핑 내역 중 상품명(item_name)이 있는 상세 데이터가 들어오면 최대한 그 상품명에 맞춰 카테고리를 추론하세요.
 
 오직 [ {{...}} ] 형식의 JSON만 출력하세요.
 - date: 날짜 (YYYY-MM-DD 형식)
@@ -201,21 +204,42 @@ def sync_to_notion(data):
         "Notion-Version": "2022-06-28"
     }
     
+    # 노션 다중 데이터베이스 라우팅 맵
+    CATEGORY_DB_MAP = {
+        "고정지출": "3a0998e5-3c5d-835c-884b-0114ad1fde31",
+        "공용 생활비": "cac998e5-3c5d-8348-9a06-817f8d7f6245",
+        "주유비": "4a6998e5-3c5d-826b-a3a6-010df200e7de",
+        "종호 지출": "8e5998e5-3c5d-8373-b2cf-0101adb65614",
+        "혜송 지출": "dd8998e5-3c5d-8318-a5fe-01974c2dba83",
+        "재이 지출": "1e7998e5-3c5d-83e1-95d8-01c6cb8d706e"
+    }
+    
+    cat = data.get("category", "")
+    # 자산 이동이나 기타 카테고리는 노션 전송 제외
+    if cat not in CATEGORY_DB_MAP:
+        return True, "전송 제외 카테고리 (자산 이동 등)"
+        
+    target_db = CATEGORY_DB_MAP[cat]
+    
     try:
         amt_str = str(data.get("amount", "0")).replace(",", "").replace("원", "").strip()
         amt = float(amt_str)
     except:
         amt = 0.0
 
+    merchant = data.get("merchant", "")
+    item_name = data.get("item_name", "")
+    title_text = merchant
+    if item_name and item_name != '알 수 없음':
+        title_text = f"{merchant} ({item_name})"
+
     payload = {
-        "parent": {"database_id": NOTION_DATABASE_ID},
+        "parent": {"database_id": target_db},
         "properties": {
-            "Date": {"date": {"start": data.get("date", datetime.now().strftime("%Y-%m-%d"))}},
-            "Merchant": {"title": [{"text": {"content": data.get("merchant", "")}}]},
-            "Item": {"rich_text": [{"text": {"content": data.get("item_name", "알 수 없음")}}]},
-            "Amount": {"number": amt},
-            "Payment Method": {"select": {"name": data.get("payment_method", "알 수 없음")}},
-            "Category": {"select": {"name": data.get("category", "기타")}}
+            "Name": {"title": [{"text": {"content": title_text}}]},
+            "지출": {"number": amt},
+            "이체, 결제 날짜": {"rich_text": [{"text": {"content": data.get("date", "")}}]},
+            "메모": {"rich_text": [{"text": {"content": item_name}}]}
         }
     }
     try:
