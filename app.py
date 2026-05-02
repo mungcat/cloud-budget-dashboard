@@ -17,7 +17,7 @@ def get_parsed_sheet():
         return client.open(SHEET_NAME).worksheet("Budget_Parsed")
     except gspread.exceptions.WorksheetNotFound:
         new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Parsed", rows="1000", cols="10")
-        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "raw_text", "_row_num"])
+        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num"])
         return new_sh
 
 def get_rules_sheet():
@@ -39,14 +39,14 @@ def save_staging_data(data_list):
     try:
         sh = get_parsed_sheet()
         sh.clear()
-        sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "raw_text", "_row_num"])
+        sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num"])
         if data_list:
             rows = []
             for d in data_list:
                 rows.append([
                     str(d.get("date", "")), str(d.get("merchant", "")), str(d.get("item_name", "")),
                     str(d.get("amount", "")), str(d.get("category", "")), str(d.get("status", "")),
-                    str(d.get("raw_text", "")), str(d.get("_row_num", ""))
+                    str(d.get("_row_num", ""))
                 ])
             sh.append_rows(rows)
     except Exception as e:
@@ -145,7 +145,9 @@ def parse_text(raw_text):
     # 2. 프롬프트 보강: 2026년임을 명시하고 금액에서 콤마 제거 지시
     prompt = f"""
 당신은 가계부 데이터 추출 전문가입니다. 
-오늘 날짜는 {today_str}입니다. 연도가 없는 날짜는 무조건 {current_year}년으로 처리하세요.
+지금은 명백히 {current_year}년입니다. 오늘 날짜는 {today_str}입니다. 
+연도가 없는 날짜는 무조건 {current_year}년으로 처리해야 합니다. 
+절대로 2024년 등 과거 연도로 파싱하지 마세요!
 
 [분류 규칙]
 - 고정지출: 관리비, 대출이자, 보험료, 정기구독, 통신비
@@ -166,7 +168,7 @@ def parse_text(raw_text):
 - date: 날짜 (YYYY-MM-DD 형식)
 - merchant: 결제처/사용처
 - item_name: 품목 (문자 원본 내용 요약)
-- amount: 금액 (콤마와 '원'을 제거한 순수 숫자)
+- amount: 금액 (콤마와 '원' 등 숫자 외 모든 문자를 제외한 순수 숫자)
 - category: 카테고리
 - status: "Pending" (알수없음 인경우) 또는 "Ready"
 - raw_text: 문자 원본 전체 내용
@@ -194,6 +196,10 @@ def parse_text(raw_text):
         for p in parsed_data:
             if p.get("date", "").startswith("2024"):
                 p["date"] = p["date"].replace("2024", str(current_year))
+                
+            # 금액에서 숫자 외 문자(원, 콤마 등) 제거 보강
+            amt_str = str(p.get("amount", "0"))
+            p["amount"] = re.sub(r'[^0-9]', '', amt_str) or "0"
                 
             merch = p.get("merchant", "")
             if merch in rules:
@@ -296,27 +302,21 @@ with col1:
         st.dataframe(df)
         
         if st.button("LLM으로 분석하기"):
-            if "parsed_results" not in st.session_state:
-                st.session_state.parsed_results = []
-            
-            # 이미 분석된 row_num 추출 (중복 분석 방지)
-            already_parsed_rows = {p.get("_row_num") for p in st.session_state.parsed_results if p.get("_row_num")}
+            # 매 분석 시 기존 캐시(및 스테이징 시트)를 초기화하여 새 데이터만 보여줌
+            st.session_state.parsed_results = []
             
             with st.spinner("제미나이가 열심히 분석 중입니다..."):
                 for row_num, row in unprocessed:
-                    if row_num in already_parsed_rows:
-                        continue # 이미 스테이징에 있으면 스킵
-                        
                     text = str(row.get("Text", row.get("text", "")))
                     parsed_list = parse_text(text)
                     for p in parsed_list:
                         p["_row_num"] = row_num # 나중에 Status 업데이트용
-                        p["raw_text"] = text # 원본 텍스트 추가
+                        p["raw_text"] = text # UI 표시용 (시트에는 저장 안됨)
                         st.session_state.parsed_results.append(p)
                 
-                # 분석 완료 후 중간 저장소(JSON)에 덮어쓰기/추가
+                # 분석 완료 후 중간 저장소(JSON)에 새 데이터 덮어쓰기
                 save_staging_data(st.session_state.parsed_results)
-            st.success("분석 완료! (임시 저장소에 안전하게 보관되었습니다)")
+            st.success("분석 완료! (임시 저장소에 새 데이터로 갱신되었습니다)")
             st.rerun()
     else:
         st.info("새로 들어온 데이터가 없습니다.")
