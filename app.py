@@ -134,12 +134,20 @@ def save_staging_data_safe(data_list):
     except Exception as e:
         st.error(f"스테이징 저장 실패: {e}")
 
-def update_sheet_status(row_index, status_text):
-    """지정된 행의 Status(4번째 열)만 안전하게 업데이트"""
+def batch_update_sheet_status(row_indices, status_text="Synced"):
+    """성공한 행들을 한 번의 API 호출로 모두 업데이트"""
+    if not row_indices:
+        return
     try:
-        sheet.update_cell(row_index, 4, status_text)
+        requests_list = []
+        for row in row_indices:
+            requests_list.append({
+                'range': f'D{row}',
+                'values': [[status_text]]
+            })
+        sheet.batch_update(requests_list)
     except Exception as e:
-        st.error(f"시트 상태 업데이트 실패: {e}")
+        st.error(f"시트 배치 업데이트 실패: {e}")
 
 def load_memory_rules():
     try:
@@ -185,7 +193,12 @@ def batch_parse_text(unprocessed_list):
 여러 건의 결제 문자가 [ID: 번호] 형태로 주어집니다. 
 각 ID별로 분석하여 하나의 JSON 리스트로 응답하세요.
 
-[분류 규칙]
+[분류 규칙 및 지시사항]
+1. 연도 인식 규칙 (CRITICAL): 입력 텍스트에 연도가 없고 월/일만 있다면 반드시 {now.year}년으로 해석하세요. 절대 과거로 추측하지 마세요!
+2. amount: 콤마 제외 숫자만 추출. 단, '취소', '환불', '승인취소' 문구가 있으면 반드시 마이너스(-) 기호를 붙이세요.
+3. merchant: 가맹점 명을 추출하되, '네이버페이(배달의민족)'처럼 괄호 정보가 있다면 이를 유지하세요.
+4. item_name: 결제 내용에서 품목을 알 수 있다면 5자 내외로 요약하고, 알 수 없으면 빈 문자열로 두세요.
+5. category: 제공된 카테고리 목록 내에서 선택. 판단이 모호하면 '알수없음'.
 - 고정지출: 관리비, 대출이자, 보험료, 정기구독, 통신비
 - 종호 지출: SK세븐모바일, 미니PC, 개인 쇼핑
 - 혜송 지출: 아내 관련 지출 (헤송폰요금, 헤송애플 등)
@@ -202,11 +215,11 @@ def batch_parse_text(unprocessed_list):
 반드시 JSON 리스트 형식으로만 응답하세요. 
 오직 [ {{...}}, {{...}} ] 형식의 JSON만 출력하세요.
 - source_id: 입력받은 [ID: 번호]의 숫자 (int)
-- date: 날짜 (YYYY-MM-DD 형식). 연도가 없으면 반드시 {now.year} 적용!
+- date: 날짜 (YYYY-MM-DD 형식)
 - merchant: 결제처/사용처
-- item_name: 품목 (문자 원본 내용 요약)
-- amount: 금액 (콤마 제외 숫자만. 환불/취소는 마이너스 기호 붙임)
-- category: '수입', '자산 이동' 외 위 목록에서 선택. 모르면 '알수없음'.
+- item_name: 품목 요약
+- amount: 금액
+- category: 카테고리
 - status: "Pending" (알수없음 인경우) 또는 "Ready"
 
 입력 데이터:
@@ -391,6 +404,7 @@ with col2:
                 items_to_send = [item for item in st.session_state.parsed_results if item.get("status") == "Ready"]
                 remaining_items = [item for item in st.session_state.parsed_results if item.get("status") != "Ready"]
                 
+                success_row_indices = []
                 success_count = 0
                 fail_count = 0
                 failed_msgs = []
@@ -399,14 +413,18 @@ with col2:
                 for item in items_to_send:
                     success, err_msg = sync_to_notion(item)
                     if success:
-                        # 성공한 건만 시트 업데이트
-                        update_sheet_status(item["_row_num"], "Synced")
+                        if item.get("_row_num"):
+                            success_row_indices.append(item["_row_num"])
                         success_count += 1
                     else:
                         item["status"] = "Fail"
                         remaining_items.append(item)
                         fail_count += 1
                         failed_msgs.append(f"{item.get('merchant')}: {err_msg}")
+                
+                # 시트 상태 한 번에 업데이트 (Rate Limit 방지)
+                if success_row_indices:
+                    batch_update_sheet_status(success_row_indices)
                 
                 st.session_state.parsed_results = remaining_items
                 save_staging_data_safe(remaining_items)
