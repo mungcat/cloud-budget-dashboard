@@ -226,7 +226,7 @@ def batch_parse_text(unprocessed_list):
 {combined_texts}
 """
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash', generation_config={"response_mime_type": "application/json"})
+        model = genai.GenerativeModel('gemini-3.1-flash-lite-preview', generation_config={"response_mime_type": "application/json"})
         response = model.generate_content(prompt)
         
         # 마크다운(```json) 찌꺼기 제거 로직 추가 (LLM 파싱 에러 방지)
