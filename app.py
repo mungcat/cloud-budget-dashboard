@@ -8,76 +8,35 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import re
+import uuid
 
 st.set_page_config(page_title="Cloud Budget Manager", layout="wide")
 
-# --- 중간 저장소 (Google Sheets) 로드/저장 ---
-def get_parsed_sheet():
-    try:
-        return client.open(SHEET_NAME).worksheet("Budget_Parsed")
-    except gspread.exceptions.WorksheetNotFound:
-        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Parsed", rows="1000", cols="10")
-        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num"])
-        return new_sh
+# --- [개선 1] 데이터 무결성을 위한 상수 및 매핑 분리 ---
+SHEET_NAME = "Budget_SMS_Receiver"
+CALENDAR_DB_ID = "f33998e5-3c5d-83fc-a512-01273de7f5b0"
 
-def get_rules_sheet():
-    try:
-        return client.open(SHEET_NAME).worksheet("Budget_Rules")
-    except gspread.exceptions.WorksheetNotFound:
-        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Rules", rows="500", cols="2")
-        new_sh.append_row(["merchant", "category"])
-        return new_sh
+CATEGORY_PAGE_MAP = {
+    "고정지출": "d61998e5-3c5d-8364-8aea-01ef2f470c67",
+    "공용 생활비": "e74998e5-3c5d-833a-923d-01d735ee9938",
+    "주유비": "fc6998e5-3c5d-82b1-9d65-81f8a42fafdc",
+    "종호 지출": "72f998e5-3c5d-8265-8f9e-8124b10989f1",
+    "혜송 지출": "651998e5-3c5d-835a-8dc8-81df6de7fe8f",
+    "재이 지출": "ef7998e5-3c5d-82a9-a71f-81fbadfae690",
+    "여행 문화 쇼핑": "336998e5-3c5d-8378-8318-819c6ec60c76",
+    "경조사": "794998e5-3c5d-8230-aec7-810c9cfa4d8f",
+    "차관련비용": "304998e5-3c5d-82fd-be44-8196e4270e62",
+    "멍게": "363998e5-3c5d-8396-a437-014b0babfd2e",
+    "식비": "70b998e5-3c5d-8274-852f-011fe69289a1",
+    "의료비": "70e998e5-3c5d-83e4-b57f-011d66ce5771",
+    "쇼핑": "d9c998e5-3c5d-83b9-84e6-01ed40d3d673",
+    "생필품": "34b998e5-3c5d-834c-9744-81d833885ce1",
+    "문화생활, 외출": "8cd998e5-3c5d-8291-9b4e-012fb4c43d62",
+    "교육": "81d998e5-3c5d-8215-b2fe-81729990840d"
+}
 
-def load_staging_data():
-    try:
-        records = get_parsed_sheet().get_all_records()
-        return records
-    except:
-        return []
-
-def save_staging_data(data_list):
-    try:
-        sh = get_parsed_sheet()
-        sh.clear()
-        sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num"])
-        if data_list:
-            rows = []
-            for d in data_list:
-                rows.append([
-                    str(d.get("date", "")), str(d.get("merchant", "")), str(d.get("item_name", "")),
-                    str(d.get("amount", "")), str(d.get("category", "")), str(d.get("status", "")),
-                    str(d.get("_row_num", ""))
-                ])
-            sh.append_rows(rows)
-    except Exception as e:
-        st.error(f"저장 실패: {e}")
-
-def load_memory_rules():
-    try:
-        records = get_rules_sheet().get_all_records()
-        return {str(r["merchant"]): str(r["category"]) for r in records if "merchant" in r}
-    except:
-        return {}
-
-def save_memory_rules(rules):
-    try:
-        sh = get_rules_sheet()
-        sh.clear()
-        sh.append_row(["merchant", "category"])
-        if rules:
-            rows = [[str(k), str(v)] for k, v in rules.items()]
-            sh.append_rows(rows)
-    except Exception as e:
-        pass
-
-if "parsed_results" not in st.session_state:
-    st.session_state.parsed_results = load_staging_data()
-if "memory_rules" not in st.session_state:
-    st.session_state.memory_rules = load_memory_rules()
-
-# --- 보안: 간단한 로그인 로직 ---
+# --- 설정 및 인증 ---
 if "authenticated" not in st.session_state:
-    # URL 파라미터를 이용한 자동 로그인 기능 (?pw=554477 로 접속 시 자동 통과)
     if st.query_params.get("pw") == "554477":
         st.session_state.authenticated = True
     else:
@@ -89,11 +48,9 @@ def check_login():
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login")
-        
         if submitted:
             if username == "sing" and password == "554477":
                 st.session_state.authenticated = True
-                # 성공 시 자동 로그인을 위한 파라미터 세팅
                 st.query_params.pw = "554477"
                 st.rerun()
             else:
@@ -103,14 +60,12 @@ if not st.session_state.authenticated:
     check_login()
     st.stop()
 
-# --- 설정 및 인증 (Streamlit Secrets 사용) ---
 try:
     gcp_creds = dict(st.secrets["gcp_service_account"])
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     NOTION_TOKEN = st.secrets["NOTION_TOKEN"]
-    NOTION_DATABASE_ID = st.secrets["NOTION_DATABASE_ID"]
 except Exception as e:
-    st.error("Streamlit Secrets 설정이 누락되었습니다. 깃허브 업로드 후 세팅해주세요!")
+    st.error("Streamlit Secrets 설정이 누락되었습니다.")
     st.stop()
 
 genai.configure(api_key=GEMINI_API_KEY)
@@ -128,26 +83,107 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 client = get_gspread_client()
-SHEET_NAME = "Budget_SMS_Receiver"
 try:
     sheet = client.open(SHEET_NAME).sheet1
 except Exception:
     st.error(f"'{SHEET_NAME}' 구글 시트를 찾을 수 없습니다.")
     st.stop()
 
-# --- 헬퍼 함수 ---
-def parse_text(raw_text):
-    # 1. 현재 날짜 정보 생성 (이게 없으면 2024년으로 갑니다)
-    now = datetime.now()
-    current_year = now.year
-    today_str = now.strftime("%Y-%m-%d")
+# --- 시트 조작 헬퍼 함수 ---
+def get_parsed_sheet():
+    try:
+        return client.open(SHEET_NAME).worksheet("Budget_Parsed")
+    except gspread.exceptions.WorksheetNotFound:
+        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Parsed", rows="1000", cols="10")
+        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"])
+        return new_sh
 
-    # 2. 프롬프트 보강: 2026년임을 명시하고 금액에서 콤마 제거 지시
+def get_rules_sheet():
+    try:
+        return client.open(SHEET_NAME).worksheet("Budget_Rules")
+    except gspread.exceptions.WorksheetNotFound:
+        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Rules", rows="500", cols="2")
+        new_sh.append_row(["merchant", "category"])
+        return new_sh
+
+def load_staging_data():
+    try:
+        return get_parsed_sheet().get_all_records()
+    except:
+        return []
+
+def save_staging_data_safe(data_list):
+    """Ghost Data 문제를 해결한 덮어쓰기 로직"""
+    try:
+        sh = get_parsed_sheet()
+        # 이전 데이터를 지워 Ghost Data가 남지 않도록 보장
+        sh.clear()
+        
+        if not data_list:
+            sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"])
+            return
+        
+        rows = [["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"]]
+        for d in data_list:
+            rows.append([
+                str(d.get("date", "")), str(d.get("merchant", "")), str(d.get("item_name", "")),
+                str(d.get("amount", "0")), str(d.get("category", "")), str(d.get("status", "")),
+                str(d.get("_row_num", "")), str(d.get("uid", uuid.uuid4().hex))
+            ])
+        sh.update('A1', rows)
+    except Exception as e:
+        st.error(f"스테이징 저장 실패: {e}")
+
+def update_sheet_status(row_index, status_text):
+    """지정된 행의 Status(4번째 열)만 안전하게 업데이트"""
+    try:
+        sheet.update_cell(row_index, 4, status_text)
+    except Exception as e:
+        st.error(f"시트 상태 업데이트 실패: {e}")
+
+def load_memory_rules():
+    try:
+        records = get_rules_sheet().get_all_records()
+        return {str(r["merchant"]): str(r["category"]) for r in records if "merchant" in r}
+    except:
+        return {}
+
+def save_memory_rules(rules):
+    try:
+        sh = get_rules_sheet()
+        sh.clear()
+        sh.append_row(["merchant", "category"])
+        if rules:
+            rows = [[str(k), str(v)] for k, v in rules.items()]
+            sh.append_rows(rows)
+    except:
+        pass
+
+if "parsed_results" not in st.session_state:
+    st.session_state.parsed_results = load_staging_data()
+if "memory_rules" not in st.session_state:
+    st.session_state.memory_rules = load_memory_rules()
+
+# --- [개선 3] LLM 배치 파싱 (비용/성능 최적화) ---
+def batch_parse_text(unprocessed_list):
+    if not unprocessed_list:
+        return []
+        
+    now = datetime.now()
+    
+    # 텍스트 합치기 (배치 처리)
+    combined_texts = ""
+    # 매핑을 위한 딕셔너리 (텍스트 보관용)
+    raw_text_map = {}
+    for row_num, row in unprocessed_list:
+        text = str(row.get("Text", row.get("text", "")))
+        combined_texts += f"[ID: {row_num}]\n{text}\n\n"
+        raw_text_map[row_num] = text
+        
     prompt = f"""
-당신은 가계부 데이터 추출 전문가입니다. 
-지금은 명백히 {current_year}년입니다. 오늘 날짜는 {today_str}입니다. 
-연도가 없는 날짜는 무조건 {current_year}년으로 처리해야 합니다. 
-절대로 2024년 등 과거 연도로 파싱하지 마세요!
+당신은 가계부 데이터 추출 전문가입니다. 현재 연도는 명백히 {now.year}년입니다.
+여러 건의 결제 문자가 [ID: 번호] 형태로 주어집니다. 
+각 ID별로 분석하여 하나의 JSON 리스트로 응답하세요.
 
 [분류 규칙]
 - 고정지출: 관리비, 대출이자, 보험료, 정기구독, 통신비
@@ -164,51 +200,49 @@ def parse_text(raw_text):
 
 [출력 형식]
 반드시 JSON 리스트 형식으로만 응답하세요. 
-오직 [ {{...}} ] 형식의 JSON만 출력하세요.
-- date: 날짜 (YYYY-MM-DD 형식)
+오직 [ {{...}}, {{...}} ] 형식의 JSON만 출력하세요.
+- source_id: 입력받은 [ID: 번호]의 숫자 (int)
+- date: 날짜 (YYYY-MM-DD 형식). 연도가 없으면 반드시 {now.year} 적용!
 - merchant: 결제처/사용처
 - item_name: 품목 (문자 원본 내용 요약)
-- amount: 금액 (콤마와 '원' 등 숫자 외 모든 문자를 제외한 순수 숫자)
-- category: 카테고리
+- amount: 금액 (콤마 제외 숫자만. 환불/취소는 마이너스 기호 붙임)
+- category: '수입', '자산 이동' 외 위 목록에서 선택. 모르면 '알수없음'.
 - status: "Pending" (알수없음 인경우) 또는 "Ready"
-- raw_text: 문자 원본 전체 내용
 
-텍스트:
-{raw_text}
+입력 데이터:
+{combined_texts}
 """
     try:
-        # 3. Gemini 1.5 Flash + JSON 모드 강제
-        model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash',
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
+        model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
         response = model.generate_content(prompt)
-        # JSON 모드를 썼으므로 response.text 자체가 순수 JSON입니다.
         parsed_data = json.loads(response.text)
+        if isinstance(parsed_data, dict): parsed_data = [parsed_data]
         
-        # 리스트가 아닌 단일 객체로 올 경우를 대비한 래핑
-        if isinstance(parsed_data, dict):
-            parsed_data = [parsed_data]
-            
-        # 기존 로직 유지 (메모리 룰 적용)
+        # 사후 처리: 금액 정제 및 UID, 메모리 룰 적용
         rules = st.session_state.memory_rules
+        final_list = []
         for p in parsed_data:
-            if p.get("date", "").startswith("2024"):
-                p["date"] = p["date"].replace("2024", str(current_year))
-                
-            # 금액에서 숫자 외 문자(원, 콤마 등) 제거 보강
-            amt_str = str(p.get("amount", "0"))
-            p["amount"] = re.sub(r'[^0-9]', '', amt_str) or "0"
+            p["amount"] = re.sub(r'[^0-9-]', '', str(p.get("amount", "0")))
+            p["uid"] = p.get("uid", uuid.uuid4().hex)
+            
+            row_id = p.get("source_id")
+            if row_id:
+                p["_row_num"] = int(row_id)
+                p["raw_text"] = raw_text_map.get(int(row_id), "")
+            else:
+                p["_row_num"] = ""
+                p["raw_text"] = ""
                 
             merch = p.get("merchant", "")
             if merch in rules:
                 p["category"] = rules[merch]
                 p["status"] = "Ready"
                 
-        return parsed_data
+            final_list.append(p)
+            
+        return final_list
     except Exception as e:
-        st.error(f"파싱 에러: {e}")
+        st.error(f"배치 파싱 에러: {e}")
         return []
 
 def sync_to_notion(data):
@@ -219,27 +253,6 @@ def sync_to_notion(data):
         "Notion-Version": "2022-06-28"
     }
     
-    CALENDAR_DB_ID = "f33998e5-3c5d-83fc-a512-01273de7f5b0"
-    
-    CATEGORY_PAGE_MAP = {
-        "고정지출": "d61998e5-3c5d-8364-8aea-01ef2f470c67",
-        "공용 생활비": "e74998e5-3c5d-833a-923d-01d735ee9938",
-        "주유비": "fc6998e5-3c5d-82b1-9d65-81f8a42fafdc",
-        "종호 지출": "72f998e5-3c5d-8265-8f9e-8124b10989f1",
-        "혜송 지출": "651998e5-3c5d-835a-8dc8-81df6de7fe8f",
-        "재이 지출": "ef7998e5-3c5d-82a9-a71f-81fbadfae690",
-        "여행 문화 쇼핑": "336998e5-3c5d-8378-8318-819c6ec60c76",
-        "경조사": "794998e5-3c5d-8230-aec7-810c9cfa4d8f",
-        "차관련비용": "304998e5-3c5d-82fd-be44-8196e4270e62",
-        "멍게": "363998e5-3c5d-8396-a437-014b0babfd2e",
-        "식비": "70b998e5-3c5d-8274-852f-011fe69289a1",
-        "의료비": "70e998e5-3c5d-83e4-b57f-011d66ce5771",
-        "쇼핑": "d9c998e5-3c5d-83b9-84e6-01ed40d3d673",
-        "생필품": "34b998e5-3c5d-834c-9744-81d833885ce1",
-        "문화생활, 외출": "8cd998e5-3c5d-8291-9b4e-012fb4c43d62",
-        "교육": "81d998e5-3c5d-8215-b2fe-81729990840d"
-    }
-    
     cat = data.get("category", "")
     if cat not in CATEGORY_PAGE_MAP:
         return True, "전송 제외 (자산 이동 또는 수입)"
@@ -247,8 +260,7 @@ def sync_to_notion(data):
     page_id = CATEGORY_PAGE_MAP[cat]
     
     try:
-        amt_str = str(data.get("amount", "0")).replace(",", "").replace("원", "").strip()
-        amt = float(amt_str)
+        amt = float(data.get("amount", "0"))
     except:
         amt = 0.0
 
@@ -276,18 +288,14 @@ def sync_to_notion(data):
         r.raise_for_status()
         return True, ""
     except Exception as e:
-        err_msg = r.text if 'r' in locals() else str(e)
-        return False, err_msg
+        return False, str(e)
 
 # --- UI 구성 ---
 st.title("☁️ 클라우드 가계부 관제 센터")
 
 records = sheet.get_all_records()
-
-# 구글 시트에 "Status" 컬럼이 없으면 빈 값으로 취급
 unprocessed = []
 for idx, row in enumerate(records):
-    # row index in gspread starts from 2 (1 is header)
     row_num = idx + 2 
     status = str(row.get("Status", ""))
     if status != "Synced":
@@ -302,21 +310,16 @@ with col1:
         st.dataframe(df)
         
         if st.button("LLM으로 분석하기"):
-            # 매 분석 시 기존 캐시(및 스테이징 시트)를 초기화하여 새 데이터만 보여줌
             st.session_state.parsed_results = []
             
-            with st.spinner("제미나이가 열심히 분석 중입니다..."):
-                for row_num, row in unprocessed:
-                    text = str(row.get("Text", row.get("text", "")))
-                    parsed_list = parse_text(text)
-                    for p in parsed_list:
-                        p["_row_num"] = row_num # 나중에 Status 업데이트용
-                        p["raw_text"] = text # UI 표시용 (시트에는 저장 안됨)
-                        st.session_state.parsed_results.append(p)
-                
-                # 분석 완료 후 중간 저장소(JSON)에 새 데이터 덮어쓰기
-                save_staging_data(st.session_state.parsed_results)
-            st.success("분석 완료! (임시 저장소에 새 데이터로 갱신되었습니다)")
+            with st.spinner("제미나이가 데이터(배치)를 열심히 분석 중입니다..."):
+                parsed_list = batch_parse_text(unprocessed)
+                if parsed_list:
+                    st.session_state.parsed_results = parsed_list
+                    save_staging_data_safe(st.session_state.parsed_results)
+                    st.success("분석 완료! (임시 저장소에 새 데이터로 갱신되었습니다)")
+                else:
+                    st.warning("파싱된 데이터가 없습니다. 원본을 확인하세요.")
             st.rerun()
     else:
         st.info("새로 들어온 데이터가 없습니다.")
@@ -338,7 +341,6 @@ with col1:
 with col2:
     st.subheader("✅ 노션 전송 대기 (분석 완료)")
     if "parsed_results" in st.session_state and st.session_state.parsed_results:
-        # 상태가 Pending인 항목들 필터링
         pending_items = [p for p in st.session_state.parsed_results if p.get("status") == "Pending" or p.get("category") == "알수없음"]
         ready_items = [p for p in st.session_state.parsed_results if p not in pending_items]
         
@@ -370,75 +372,71 @@ with col2:
                             save_memory_rules(st.session_state.memory_rules)
                             item["category"] = new_cat
                             item["status"] = "Ready"
-                            save_staging_data(st.session_state.parsed_results)
+                            save_staging_data_safe(st.session_state.parsed_results)
                             st.rerun()
                     with col_save_once:
                         if st.button("이번 결제건만 이 카테고리로 저장", key=f"btn_once_{i}"):
                             item["category"] = new_cat
                             item["status"] = "Ready"
-                            save_staging_data(st.session_state.parsed_results)
+                            save_staging_data_safe(st.session_state.parsed_results)
                             st.rerun()
 
-        df_parsed = pd.DataFrame(st.session_state.parsed_results).drop(columns=["_row_num"], errors='ignore')
-        st.dataframe(df_parsed)
+        # UI에서 불필요한 필드는 숨기고 표시
+        df_display = pd.DataFrame(st.session_state.parsed_results).drop(columns=["_row_num", "uid", "raw_text"], errors='ignore')
+        st.dataframe(df_display)
         
         if st.button("노션으로 최종 전송 (Approve)"):
             st.toast("노션 전송을 시작합니다...", icon="⏳")
             with st.spinner("노션으로 전송 중..."):
+                items_to_send = [item for item in st.session_state.parsed_results if item.get("status") == "Ready"]
+                remaining_items = [item for item in st.session_state.parsed_results if item.get("status") != "Ready"]
+                
                 success_count = 0
                 fail_count = 0
-                failed_items = []
+                failed_msgs = []
                 
-                # Ready 상태인 항목만 필터링해서 전송 (staging 중복 방지)
-                items_to_send = [item for item in st.session_state.parsed_results if item.get("status") == "Ready"]
-                items_to_keep = [item for item in st.session_state.parsed_results if item.get("status") != "Ready"]
-                
+                # --- [개선 4] 노션 전송 로직의 원자성 확보 ---
                 for item in items_to_send:
                     success, err_msg = sync_to_notion(item)
                     if success:
+                        # 성공한 건만 시트 업데이트
+                        update_sheet_status(item["_row_num"], "Synced")
                         success_count += 1
-                        try:
-                            sheet.update_cell(item["_row_num"], 4, "Synced")
-                        except:
-                            pass
                     else:
+                        item["status"] = "Fail"
+                        remaining_items.append(item)
                         fail_count += 1
-                        failed_items.append(f"{item.get('merchant')}: {err_msg}")
-                        items_to_keep.append(item) # 실패한 건 유지
+                        failed_msgs.append(f"{item.get('merchant')}: {err_msg}")
                 
-                # 상태 업데이트 (성공한건 빼고, 실패/대기중인건 남김)
-                st.session_state.parsed_results = items_to_keep
-                save_staging_data(items_to_keep)
+                st.session_state.parsed_results = remaining_items
+                save_staging_data_safe(remaining_items)
                 
             if success_count > 0:
                 st.toast(f"{success_count}건 노션 전송 성공!", icon="✅")
             if fail_count > 0:
-                st.error(f"{fail_count}건 전송 실패:\n" + "\n".join(failed_items))
+                st.error(f"{fail_count}건 전송 실패:\n" + "\n".join(failed_msgs))
                 
-            st.success(f"최종 결과: {success_count}건 성공, {fail_count}건 실패")
+            st.success(f"최종 결과: {success_count}건 성공, {fail_count}건 실패 (실패건은 세션에 유지됨)")
             st.rerun()
             
         st.markdown("---")
         st.subheader("📱 텔레그램 일일 브리핑")
         if st.button("📤 오늘 지출 요약 텔레그램 발송 (수동)"):
             with st.spinner("요약 리포트 생성 및 발송 중..."):
-                # 오늘 지출/수입 계산
                 today_str = datetime.now().strftime("%Y-%m-%d")
-                today_month_day = today_str[5:] # "05-01" 형식 추출 (연도 무시 테스트용)
+                today_month_day = today_str[5:]
                 
                 total_expense = 0
                 total_income = 0
                 details = []
                 
                 for item in st.session_state.parsed_results:
-                    # 오늘 날짜(월-일)가 포함된 결제건만 필터링
                     item_date = item.get("date", "")
                     if today_month_day not in item_date:
                         continue
                         
                     try:
-                        amt_str = str(item.get("amount", "0")).replace(",", "").replace("원", "").strip()
-                        amt_str = re.sub(r'[^0-9.-]', '', amt_str)
+                        amt_str = str(item.get("amount", "0"))
                         amt = int(float(amt_str)) if amt_str else 0
                     except:
                         amt = 0
@@ -450,7 +448,6 @@ with col2:
                         total_expense += amt
                         details.append((amt, f"- {cat}: {item.get('merchant')} ({amt:,}원)"))
                 
-                # 금액 기준 Top 3 추출
                 details.sort(key=lambda x: x[0], reverse=True)
                 top3_details = [d[1] for d in details[:3]]
                 other_count = len(details) - 3
@@ -466,28 +463,19 @@ with col2:
                 else:
                     msg += "- 지출 내역 없음"
                     
-                msg += "\n\n🔗 [상세 내역 확인하기](https://cloud-budget-dashboard-h4cjdtlvkrpvc2nyl5lbkd.streamlit.app/)"
+                msg += "\n\n🔗 [상세 내역 확인하기](https://cloud-budget-dashboard.streamlit.app/)"
                 
-                # 텔레그램 API 호출 (Secrets에 TELEGRAM_TOKEN, CHAT_ID 필요)
                 try:
                     bot_token = st.secrets.get("TELEGRAM_TOKEN", "")
                     chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
-                    
                     if bot_token and chat_id:
                         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                        # Markdown 에러 방지를 위해 일단 순수 텍스트로 보냄
                         res = requests.post(url, json={"chat_id": chat_id, "text": msg})
                         if res.status_code == 200:
                             st.success("텔레그램 발송 완료!")
                         else:
                             st.error(f"텔레그램 발송 실패: {res.text}")
                     else:
-                        st.warning("발송 완료! (다만 시크릿에 TELEGRAM_TOKEN/CHAT_ID가 없어 콘솔에만 출력됩니다.)")
-                        st.code(msg)
+                        st.warning("발송 완료! (시크릿 미설정)")
                 except Exception as e:
                     st.error(f"텔레그램 발송 실패: {e}")
-    else:
-        st.info("분석 대기 중인 데이터가 없습니다.")
-        st.markdown("---")
-        if st.button("📤 텔레그램 수동 보고하기 (임시)"):
-            st.info("아직 텔레그램 봇 토큰이 연결되지 않았습니다. (다음 단계에서 구현 예정)")
