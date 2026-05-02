@@ -228,7 +228,17 @@ def batch_parse_text(unprocessed_list):
     try:
         model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
         response = model.generate_content(prompt)
-        parsed_data = json.loads(response.text)
+        
+        # 마크다운(```json) 찌꺼기 제거 로직 추가 (LLM 파싱 에러 방지)
+        raw_json = response.text.strip()
+        if raw_json.startswith("```json"):
+            raw_json = raw_json[7:]
+        elif raw_json.startswith("```"):
+            raw_json = raw_json[3:]
+        if raw_json.endswith("```"):
+            raw_json = raw_json[:-3]
+            
+        parsed_data = json.loads(raw_json.strip())
         if isinstance(parsed_data, dict): parsed_data = [parsed_data]
         
         # 사후 처리: 금액 정제 및 UID, 메모리 룰 적용
@@ -331,9 +341,9 @@ with col1:
                     st.session_state.parsed_results = parsed_list
                     save_staging_data_safe(st.session_state.parsed_results)
                     st.success("분석 완료! (임시 저장소에 새 데이터로 갱신되었습니다)")
+                    st.rerun() # 성공 시에만 리런하여 에러 메세지가 유지되게 함
                 else:
-                    st.warning("파싱된 데이터가 없습니다. 원본을 확인하세요.")
-            st.rerun()
+                    st.error("파싱에 실패했거나 데이터가 없습니다. 원본 시트나 프롬프트를 확인하세요.")
     else:
         st.info("새로 들어온 데이터가 없습니다.")
         
