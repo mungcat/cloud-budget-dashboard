@@ -137,39 +137,36 @@ except Exception:
 
 # --- 헬퍼 함수 ---
 def parse_text(raw_text):
-    # 1. 현재 날짜를 프롬프트에 주입 (2026년 인식 핵심)
-    current_year = datetime.now().year
-    today_full = datetime.now().strftime("%Y-%m-%d")
+    # 1. 현재 날짜 정보 생성 (이게 없으면 2024년으로 갑니다)
+    now = datetime.now()
+    current_year = now.year
+    today_str = now.strftime("%Y-%m-%d")
 
+    # 2. 프롬프트 보강: 2026년임을 명시하고 금액에서 콤마 제거 지시
     prompt = f"""
-당신은 가계부 전문 분석가입니다. 오늘 날짜는 {today_full}입니다.
-다음 결제 텍스트를 분석하여 JSON 배열로 반환하세요. 
-연도가 생략된 경우 반드시 {current_year}년으로 가정하세요.
+당신은 가계부 데이터 추출 전문가입니다. 
+오늘 날짜는 {today_str}입니다. 연도가 없는 날짜는 무조건 {current_year}년으로 처리하세요.
 
-[노션 카테고리 분류 기준]
-- 고정지출: 관리비, 대출이자, 보험료, 정기구독
-- 종호 지출: SK세븐모바일, 블루멤버스 등 남편 개인 지출 및 핸드폰 요금
-- 혜송 지출: 아내 개인 지출
+[분류 규칙]
+- 고정지출: 관리비, 대출이자, 보험료, 정기구독, 통신비
+- 종호 지출: SK세븐모바일, 미니PC, 개인 쇼핑
+- 혜송 지출: 아내 관련 지출 (헤송폰요금, 헤송애플 등)
+- 재이 지출: 웅진씽크빅, 영어책, 아기용품, 유산균
+- 자산 이동: 네이버페이/쿠페이/카카오페이 '출금' (단순 충전)
+- 수입: 입금 내역
 - 공용 생활비: 식비, 마트 등
 - 주유비: 주유소
-- 재이 지출: 아이사랑 카드, 유아용품
 - 여행 문화 쇼핑: 쇼핑몰, 숙박, 여행
 - 경조사: 축의금, 부조금
-- 자산 이동: 쿠페이 충전, 네이버페이 충전 등 선불페이 지갑으로 돈이 넘어가는 것
-- 수입: 입금, 월급 등
 - 알수없음: 확실치 않은 가맹점
 
-[🔥네이버페이/쿠페이 중복 결제 특수 로직🔥]
-결제 수단이 '네이버페이'나 '쿠페이'인 경우, 은행 계좌에서 돈이 빠져나가는 출금 문자와 실제 쇼핑몰 결제 내역이 중복될 가능성이 매우 높습니다.
-1. 은행 출금 데이터(예: SC제일은행 -> 네이버페이 출금 65,275원)는 무조건 카테고리를 '자산 이동'으로 고정하고, 실소비(지출)로 취급하지 마세요.
-2. 실제 소비 금액은 반드시 쇼핑몰 상세 내역(예: 베어블리 자석블록 36,900원)의 품목별 금액을 합산해서 산출하고, 이를 '실소비' 항목(재이 지출 등)으로 분류하세요.
-3. 네이버쇼핑 내역 중 상품명(item_name)이 있는 상세 데이터가 들어오면 최대한 그 상품명에 맞춰 카테고리를 추론하세요.
-
+[출력 형식]
+반드시 JSON 리스트 형식으로만 응답하세요. 
 오직 [ {{...}} ] 형식의 JSON만 출력하세요.
 - date: 날짜 (YYYY-MM-DD 형식)
 - merchant: 결제처/사용처
 - item_name: 품목 (문자 원본 내용 요약)
-- amount: 금액 (숫자, 취소면 음수)
+- amount: 금액 (콤마와 '원'을 제거한 순수 숫자)
 - category: 카테고리
 - status: "Pending" (알수없음 인경우) 또는 "Ready"
 - raw_text: 문자 원본 전체 내용
@@ -178,23 +175,23 @@ def parse_text(raw_text):
 {raw_text}
 """
     try:
-        # 2. JSON 출력을 강제하는 설정 추가
+        # 3. Gemini 1.5 Flash + JSON 모드 강제
         model = genai.GenerativeModel(
-            model_name='gemini-1.5-flash-latest', # 최신 안정화 모델 권장
+            model_name='gemini-1.5-flash',
             generation_config={"response_mime_type": "application/json"}
         )
         
         response = model.generate_content(prompt)
-        res_text = response.text.strip()
+        # JSON 모드를 썼으므로 response.text 자체가 순수 JSON입니다.
+        parsed_data = json.loads(response.text)
         
-        # JSON 파싱
-        parsed = json.loads(res_text)
-        parsed_list = parsed if isinstance(parsed, list) else [parsed]
-        
-        # LLM 메모리 규칙 적용 및 연도 검증
+        # 리스트가 아닌 단일 객체로 올 경우를 대비한 래핑
+        if isinstance(parsed_data, dict):
+            parsed_data = [parsed_data]
+            
+        # 기존 로직 유지 (메모리 룰 적용)
         rules = st.session_state.memory_rules
-        for p in parsed_list:
-            # 혹시나 2024년으로 나왔을 경우 강제 교정
+        for p in parsed_data:
             if p.get("date", "").startswith("2024"):
                 p["date"] = p["date"].replace("2024", str(current_year))
                 
@@ -203,9 +200,9 @@ def parse_text(raw_text):
                 p["category"] = rules[merch]
                 p["status"] = "Ready"
                 
-        return parsed_list
+        return parsed_data
     except Exception as e:
-        st.error(f"⚠️ 분석 실패: {e}")
+        st.error(f"파싱 에러: {e}")
         return []
 
 def sync_to_notion(data):
