@@ -94,8 +94,8 @@ def get_parsed_sheet():
     try:
         return client.open(SHEET_NAME).worksheet("Budget_Parsed")
     except gspread.exceptions.WorksheetNotFound:
-        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Parsed", rows="1000", cols="10")
-        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"])
+        new_sh = client.open(SHEET_NAME).add_worksheet(title="Budget_Parsed", rows="1000", cols="11")
+        new_sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "installment_months", "sc_balance", "cumulative_expense", "_row_num", "uid"])
         return new_sh
 
 def get_rules_sheet():
@@ -119,15 +119,17 @@ def save_staging_data_safe(data_list):
         # 이전 데이터를 지워 Ghost Data가 남지 않도록 보장
         sh.clear()
         
+        headers = ["date", "merchant", "item_name", "amount", "category", "status", "installment_months", "sc_balance", "cumulative_expense", "_row_num", "uid"]
         if not data_list:
-            sh.append_row(["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"])
+            sh.append_row(headers)
             return
         
-        rows = [["date", "merchant", "item_name", "amount", "category", "status", "_row_num", "uid"]]
+        rows = [headers]
         for d in data_list:
             rows.append([
                 str(d.get("date", "")), str(d.get("merchant", "")), str(d.get("item_name", "")),
                 str(d.get("amount", "0")), str(d.get("category", "")), str(d.get("status", "")),
+                str(d.get("installment_months", "")), str(d.get("sc_balance", "")), str(d.get("cumulative_expense", "")),
                 str(d.get("_row_num", "")), str(d.get("uid", uuid.uuid4().hex))
             ])
         sh.update('A1', rows)
@@ -213,18 +215,21 @@ def batch_parse_text(unprocessed_list):
 - 경조사: 축의금, 부조금
 - 알수없음: 확실치 않은 가맹점
 6. 할부 처리 확인 (중요): 결제 금액이 200,000원 이상인 경우, 자체 할부 처리 여부를 묻기 위해 status를 "Pending_Installment"로 설정하세요. 그 외 판단이 모호하면 "Pending", 명확하면 "Ready"로 설정하세요.
-7. 무시 대상 (Ignore): '제일은행 이자 납입 예정 안내' 등 실제 결제 금액이 발생하지 않았거나 0원인 단순 알림 문자는 status를 "Ignore"로 설정하여 전송에서 제외하세요.
+7. 무시 대상 (Ignore): '대출 이자 납입 예정 안내'나 '출금 예정' 등 실제 결제 금액이 발생하지 않았거나 단순 알림 문자는 status를 "Ignore"로 설정하여 전송에서 제외하세요.
 
 [출력 형식]
 반드시 JSON 리스트 형식으로만 응답하세요. 
 오직 [ {{...}}, {{...}} ] 형식의 JSON만 출력하세요.
 - source_id: 입력받은 [ID: 번호]의 숫자 (int)
 - date: 날짜 (YYYY-MM-DD 형식)
-- merchant: 결제처/사용처 (출처 포함)
-- item_name: 품목 요약
+- merchant: 결제처/사용처 (출처 포함). 단, 'SC-현대카드' 결제인 경우 '(혜송카드-결제처명)' 형식으로, '현대카드 블루멤버스' 결제인 경우 '(종호카드-결제처명)' 형식으로 작성하세요.
+- item_name: 품목 요약 (제일은행/현대카드 결제 중 '네이버페이', '쿠페이/쿠팡' 관련 충전/결제인 경우 각각 '네이버페이 충전', '쿠페이 충전'으로 기재)
 - amount: 금액
-- category: 카테고리
+- category: 카테고리 (단, 네이버페이나 쿠페이 충전 내역은 무조건 '자산 이동'으로 분류)
 - status: "Pending" (알수없음 인경우), "Pending_Installment" (20만원 이상), "Ignore" (단순 안내/0원), 또는 "Ready"
+- installment_months: 할부 개월 (없거나 일시불이면 '0')
+- sc_balance: 통장 잔액 (정보가 있으면 숫자만, 없으면 null)
+- cumulative_expense: 누적 소비양 (정보가 있으면 숫자만, 없으면 null)
 
 입력 데이터:
 {combined_texts}
