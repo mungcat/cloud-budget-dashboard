@@ -372,7 +372,15 @@ with col1:
 
 with col2:
     st.subheader("✅ 노션 전송 대기 (분석 완료)")
-    st.markdown("[📊 구글 스프레드시트에서 직접 파싱된 데이터 수정하기 (Budget_Parsed)](https://docs.google.com/spreadsheets/d/1uZNUmbar71PQ8QM9pbrftGP7hCLu5yxAuOo8LQEBEMI/edit?gid=1900917252#gid=1900917252)")
+    
+    col_link, col_refresh = st.columns([3, 1])
+    with col_link:
+        st.markdown("[📊 구글 스프레드시트에서 직접 파싱된 데이터 수정하기 (Budget_Parsed)](https://docs.google.com/spreadsheets/d/1uZNUmbar71PQ8QM9pbrftGP7hCLu5yxAuOo8LQEBEMI/edit?gid=1900917252#gid=1900917252)")
+    with col_refresh:
+        if st.button("🔄 시트 새로고침"):
+            st.session_state.parsed_results = load_staging_data()
+            st.rerun()
+
     if "parsed_results" in st.session_state and st.session_state.parsed_results:
         pending_items = [p for p in st.session_state.parsed_results if p.get("status") == "Pending" or p.get("category") == "알수없음"]
         ready_items = [p for p in st.session_state.parsed_results if p not in pending_items]
