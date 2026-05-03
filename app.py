@@ -200,12 +200,12 @@ def batch_parse_text(unprocessed_list):
 4. item_name: 결제 내용에서 품목을 알 수 있다면 5자 내외로 요약하고, 알 수 없으면 빈 문자열로 두세요.
    - 예시 가이드: '김지영' 가맹점은 '도로시 키즈카페'로, '피엠인터네셔날코퍼'는 '사운드펜'으로 요약하는 것을 추천합니다.
 5. category: 제공된 카테고리 목록 내에서 선택. 판단이 모호하면 '알수없음'.
-   - 예시 가이드: '김지영', '피엠인터네셔날코퍼'는 '재이 지출'로 분류하세요.
+   - 예시 가이드: '김지영', '피엠인터네셔날코퍼'는 '재이 지출'로 분류하세요. '네일' 결제건은 '혜송 지출'로 분류하세요.
 - 고정지출: 관리비, 대출이자, 보험료, 정기구독, 통신비
 - 종호 지출: SK세븐모바일, 미니PC, 개인 쇼핑
-- 혜송 지출: 아내 관련 지출 (헤송폰요금, 헤송애플 등)
+- 혜송 지출: 아내 관련 지출 (헤송폰요금, 헤송애플, 네일 등)
 - 재이 지출: 웅진씽크빅, 영어책, 아기용품, 유산균, 키즈카페
-- 자산 이동: 네이버페이/쿠페이/카카오페이 '출금' (단순 충전)
+- 자산 이동: 네이버페이/쿠페이/카카오페이 '출금' (단순 충전 및 카드사 결제 문자)
 - 수입: 입금 내역
 - 공용 생활비: 식비, 마트 등
 - 주유비: 주유소
@@ -213,6 +213,7 @@ def batch_parse_text(unprocessed_list):
 - 경조사: 축의금, 부조금
 - 알수없음: 확실치 않은 가맹점
 6. 할부 처리 확인 (중요): 결제 금액이 200,000원 이상인 경우, 자체 할부 처리 여부를 묻기 위해 status를 "Pending_Installment"로 설정하세요. 그 외 판단이 모호하면 "Pending", 명확하면 "Ready"로 설정하세요.
+7. 무시 대상 (Ignore): '제일은행 이자 납입 예정 안내' 등 실제 결제 금액이 발생하지 않았거나 0원인 단순 알림 문자는 status를 "Ignore"로 설정하여 전송에서 제외하세요.
 
 [출력 형식]
 반드시 JSON 리스트 형식으로만 응답하세요. 
@@ -223,7 +224,7 @@ def batch_parse_text(unprocessed_list):
 - item_name: 품목 요약
 - amount: 금액
 - category: 카테고리
-- status: "Pending" (알수없음 인경우), "Pending_Installment" (20만원 이상), 또는 "Ready"
+- status: "Pending" (알수없음 인경우), "Pending_Installment" (20만원 이상), "Ignore" (단순 안내/0원), 또는 "Ready"
 
 입력 데이터:
 {combined_texts}
@@ -331,7 +332,6 @@ col1, col2 = st.columns(2)
 
 with col1:
     st.subheader("📡 수신된 원천 데이터 (구글 시트)")
-    st.markdown("[📊 구글 스프레드시트에서 직접 확인/편집하기](https://docs.google.com/spreadsheets/d/1BfVl00bLzQfE0R0e9b2_UoO-yNqWc1A/edit) (링크는 실제 시트 ID에 맞게 조정 필요)")
     if unprocessed:
         df = pd.DataFrame([r[1] for r in unprocessed])
         st.dataframe(df)
@@ -367,6 +367,7 @@ with col1:
 
 with col2:
     st.subheader("✅ 노션 전송 대기 (분석 완료)")
+    st.markdown("[📊 구글 스프레드시트에서 직접 파싱된 데이터 수정하기 (Budget_Parsed)](https://docs.google.com/spreadsheets/d/1uZNUmbar71PQ8QM9pbrftGP7hCLu5yxAuOo8LQEBEMI/edit?gid=1900917252#gid=1900917252)")
     if "parsed_results" in st.session_state and st.session_state.parsed_results:
         pending_items = [p for p in st.session_state.parsed_results if p.get("status") == "Pending" or p.get("category") == "알수없음"]
         ready_items = [p for p in st.session_state.parsed_results if p not in pending_items]
